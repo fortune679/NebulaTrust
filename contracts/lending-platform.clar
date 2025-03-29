@@ -199,4 +199,112 @@
         ERR-TRUST-NOT-FOUND
       ))
     )
+    ;; Validate trust exists and is active
+    (asserts! (get is-active trust) ERR-UNAUTHORIZED)
     
+    ;; Validate withdrawal amount
+    (asserts! (> withdraw-amount u0) ERR-INVALID-PARAMETER)
+    (asserts! (<= withdraw-amount (get security-amount trust)) ERR-INSUFFICIENT-FUNDS)
+    
+    ;; Calculate new security amount after withdrawal
+    (let
+      (
+        (new-security-amount (- (get security-amount trust) withdraw-amount))
+        (min-required-security (calculate-min-security (get credit-amount trust)))
+      )
+      ;; Ensure remaining security meets minimum requirement
+      (asserts! (>= new-security-amount min-required-security) ERR-INSUFFICIENT-SECURITY)
+      
+      ;; Update trust with new security amount
+      (map-set trusts 
+        {trust-id: trust-id, beneficiary: tx-sender}
+        (merge trust {security-amount: new-security-amount})
+      )
+      
+      (ok withdraw-amount)
+    )
+  )
+)
+
+(define-public (settle-trust (trust-id uint))
+  (let 
+    (
+      ;; Validate trust ownership first
+      (trust-exists (asserts! 
+        (validate-trust-ownership trust-id) 
+        ERR-UNAUTHORIZED
+      ))
+      
+      (trust (unwrap! 
+        (map-get? trusts {trust-id: trust-id, beneficiary: tx-sender}) 
+        ERR-TRUST-NOT-FOUND
+      ))
+      (current-settlements (default-to 
+        {total-settled: u0} 
+        (map-get? trust-settlements {trust-id: trust-id, beneficiary: tx-sender})
+      ))
+    )
+    ;; Validate trust exists and is active
+    (asserts! (get is-active trust) ERR-UNAUTHORIZED)
+    
+    ;; Calculate total settlement amount with yield
+    (let 
+      (
+        (total-settlement (+ 
+          (get credit-amount trust)
+          (/ (* (get credit-amount trust) (get yield-rate trust)) u100)
+        ))
+      )
+      ;; Validate settlement amount doesn't overflow
+      (asserts! (<= total-settlement MAX-UINT) ERR-TRUST-REPAYMENT-FAILED)
+      
+      ;; Update trust status
+      (map-set trusts 
+        {trust-id: trust-id, beneficiary: tx-sender}
+        (merge trust {is-active: false})
+      )
+      
+      ;; Track settlements
+      (map-set trust-settlements
+        {trust-id: trust-id, beneficiary: tx-sender}
+        {total-settled: total-settlement}
+      )
+      
+      (ok total-settlement)
+    )
+  )
+)
+
+(define-public (foreclose-trust (trust-id uint))
+  (let 
+    (
+      ;; Validate trust ownership first
+      (trust-exists (asserts! 
+        (validate-trust-ownership trust-id) 
+        ERR-UNAUTHORIZED
+      ))
+      
+      (trust (unwrap! 
+        (map-get? trusts {trust-id: trust-id, beneficiary: tx-sender}) 
+        ERR-TRUST-NOT-FOUND
+      ))
+    )
+    ;; Validate trust exists
+    (asserts! (get is-active trust) ERR-UNAUTHORIZED)
+    
+    ;; Check if trust is past due
+    (asserts! 
+      (> (- block-height (get trust-start-block trust)) 
+         (get trust-duration trust)) 
+      ERR-FORECLOSURE-NOT-ALLOWED
+    )
+    
+    ;; Mark trust as inactive and allow foreclosure
+    (map-set trusts 
+      {trust-id: trust-id, beneficiary: tx-sender}
+      (merge trust {is-active: false})
+    )
+    
+    (ok true)
+  )
+)
